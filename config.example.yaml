@@ -1,0 +1,179 @@
+# Xpander Configuration File
+# Copy this to ~/.config/xpander/config.yaml
+
+# Global settings
+settings:
+  # Play a sound when expansion occurs
+  enable_sound: false
+
+  # Show a notification when expansion occurs
+  notify_on_expand: false
+
+  # Master enable/disable switch
+  enabled: true
+
+  # Delete the trigger text before inserting replacement
+  delete_trigger: true
+
+  # Delay between keystrokes in milliseconds (lower = faster)
+  keystroke_delay_ms: 12
+
+  # Custom ydotool socket path (optional, uses default if not specified)
+  # ydotool_socket: "/run/user/1000/.ydotool_socket"
+
+# Snippet definitions
+snippets:
+  # Basic text replacement
+  - trigger: ";email"
+    replace: "myemail@example.com"
+    label: "Email address"
+
+  # Multi-line replacement
+  - trigger: ";sig"
+    replace: |
+      Best regards,
+      Your Name
+      your.email@example.com
+    label: "Email signature"
+
+  # Date/time variables
+  - trigger: ";date"
+    replace: "{{date}}"
+    label: "Current date (YYYY-MM-DD)"
+
+  - trigger: ";dmy"
+    replace: "{{date:%d/%m/%Y}}"
+    label: "Date (DD/MM/YYYY)"
+
+  - trigger: ";time"
+    replace: "{{time}}"
+    label: "Current time"
+
+  - trigger: ";now"
+    replace: "{{datetime}}"
+    label: "Current date and time"
+
+  - trigger: ";ts"
+    replace: "{{date:%Y%m%d%H%M%S}}"
+    label: "Timestamp"
+
+  # Address with cursor positioning
+  - trigger: ";addr"
+    replace: |
+      $|$
+      123 Main Street
+      City, State 12345
+      USA
+    cursor_position: true
+    label: "Address template"
+
+  # Clipboard variable
+  - trigger: ";paste"
+    replace: "Pasted: {{clipboard}}"
+    label: "Paste with prefix"
+
+  # Environment variable
+  - trigger: ";user"
+    replace: "{{env:USER}}"
+    label: "Current username"
+
+  - trigger: ";home"
+    replace: "{{env:HOME}}"
+    label: "Home directory"
+
+  # Shell command
+  - trigger: ";uuid"
+    replace: "{{uuid}}"
+    label: "Random UUID"
+
+  - trigger: ";pwd"
+    replace: "{{shell:pwd}}"
+    label: "Current directory"
+
+  - trigger: ";branch"
+    replace: "{{shell:git branch --show-current 2>/dev/null || echo 'not a git repo'}}"
+    label: "Current git branch"
+
+  # Random numbers
+  - trigger: ";rand4"
+    replace: "{{random:4}}"
+    label: "Random 4-digit number"
+
+  - trigger: ";rand6"
+    replace: "{{random:6}}"
+    label: "Random 6-digit number"
+
+  # Case propagation example
+  - trigger: ";btw"
+    replace: "by the way"
+    propagate_case: true
+    word_boundary: true
+    label: "By the way (case sensitive)"
+
+  # Common typo corrections (word boundary to avoid mid-word corrections)
+  - trigger: "teh"
+    replace: "the"
+    word_boundary: true
+    label: "Typo correction"
+
+  - trigger: "dont"
+    replace: "don't"
+    word_boundary: true
+    label: "Contraction"
+
+  # Programming snippets
+  - trigger: ";todo"
+    replace: "// TODO: $|$"
+    cursor_position: true
+    label: "TODO comment"
+
+  - trigger: ";fixme"
+    replace: "// FIXME: $|$"
+    cursor_position: true
+    label: "FIXME comment"
+
+  - trigger: ";debug"
+    replace: "console.log('DEBUG:', $|$);"
+    cursor_position: true
+    label: "Debug log"
+
+  # Markdown snippets
+  - trigger: ";code"
+    replace: |
+      ```$|$
+      ```
+    cursor_position: true
+    label: "Code block"
+
+  - trigger: ";link"
+    replace: "[$|$](url)"
+    cursor_position: true
+    label: "Markdown link"
+
+  # Meeting notes template
+  - trigger: ";meeting"
+    replace: |
+      # Meeting Notes - {{date}}
+
+      ## Attendees
+      - $|$
+
+      ## Agenda
+      1.
+
+      ## Discussion
+
+
+      ## Action Items
+      - [ ]
+
+      ## Next Meeting
+
+    cursor_position: true
+    label: "Meeting notes template"
+
+  # Disabled snippet example
+  - trigger: ";disabled"
+    replace: "This won't expand"
+    enabled: false
+    label: "Disabled example"

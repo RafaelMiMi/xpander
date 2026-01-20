@@ -1,0 +1,59 @@
+[package]
+name = "xpander"
+version = "0.1.0"
+edition = "2021"
+authors = ["xpander contributors"]
+description = "A text expansion application for Linux (Wayland)"
+license = "MIT"
+repository = "https://github.com/example/xpander"
+keywords = ["text-expansion", "wayland", "linux", "productivity"]
+categories = ["text-processing", "gui"]
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full", "sync", "process"] }
+
+# Input monitoring
+evdev = "0.12"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+
+# File watching for hot-reload
+notify = "6"
+
+# Date/time handling
+chrono = "0.4"
+
+# Clipboard access
+arboard = "3"
+
+# GUI
+gtk4 = "0.7"
+ksni = "0.2"
+
+# XDG directories
+dirs = "5"
+
+# Regex support
+regex = "1"
+
+# Logging
+log = "0.4"
+env_logger = "0.11"
+
+# Error handling
+anyhow = "1"
+thiserror = "1"
+
+# Random number generation
+rand = "0.8"
+
+# UUID generation (for shell command alternative)
+uuid = { version = "1", features = ["v4"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true

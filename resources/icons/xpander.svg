@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="256" height="256" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background circle -->
+  <circle cx="128" cy="128" r="120" fill="#4A90D9"/>
+
+  <!-- Keyboard base -->
+  <rect x="40" y="90" width="176" height="100" rx="12" fill="#2C3E50"/>
+
+  <!-- Keyboard keys row 1 -->
+  <rect x="52" y="102" width="20" height="18" rx="3" fill="#ECF0F1"/>
+  <rect x="78" y="102" width="20" height="18" rx="3" fill="#ECF0F1"/>
+  <rect x="104" y="102" width="20" height="18" rx="3" fill="#ECF0F1"/>
+  <rect x="130" y="102" width="20" height="18" rx="3" fill="#ECF0F1"/>
+  <rect x="156" y="102" width="20" height="18" rx="3" fill="#ECF0F1"/>
+  <rect x="182" y="102" width="20" height="18" rx="3" fill="#ECF0F1"/>
+
+  <!-- Keyboard keys row 2 -->
+  <rect x="58" y="126" width="20" height="18" rx="3" fill="#ECF0F1"/>
+  <rect x="84" y="126" width="20" height="18" rx="3" fill="#ECF0F1"/>
+  <rect x="110" y="126" width="20" height="18" rx="3" fill="#ECF0F1"/>
+  <rect x="136" y="126" width="20" height="18" rx="3" fill="#ECF0F1"/>
+  <rect x="162" y="126" width="20" height="18" rx="3" fill="#ECF0F1"/>
+
+  <!-- Spacebar -->
+  <rect x="70" y="150" width="116" height="18" rx="3" fill="#ECF0F1"/>
+
+  <!-- Expansion arrows -->
+  <path d="M 128 50 L 90 80 L 100 80 L 100 70 L 156 70 L 156 80 L 166 80 Z"
+        fill="#F39C12" opacity="0.9"/>
+
+  <!-- Text expansion indicator -->
+  <text x="128" y="220" text-anchor="middle" font-family="Arial, sans-serif"
+        font-size="24" font-weight="bold" fill="#FFFFFF">Xpander</text>
+</svg>
