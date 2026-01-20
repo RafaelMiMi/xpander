@@ -29,8 +29,8 @@ echo
 # Install ydotool
 echo "Step 1: Installing ydotool..."
 case $DISTRO in
-    ubuntu|debian|pop|linuxmint)
-       #  sudo apt update
+    ubuntu|debian|pop|linuxmint|zorin)
+        #  sudo apt update
         sudo apt install -y ydotool
         ;;
     fedora)
@@ -53,13 +53,18 @@ echo "ydotool installed successfully"
 echo
 
 # Enable and start ydotoold service (if available)
-echo "Step 2: Enabling ydotoold service..."
-if systemctl list-unit-files | grep -q "ydotool"; then
-    sudo systemctl enable ydotool
-    sudo systemctl start ydotool
-    echo "ydotoold service enabled and started"
-elif command -v ydotoold &> /dev/null; then
-    # Newer ydotool with separate daemon - create service file
+# Step 2: Enabling ydotoold service
+echo "Step 2: Configuring ydotoold service..."
+
+# Stop and disable any existing ydotool (standard) service to avoid conflicts
+if systemctl list-unit-files | grep -q "ydotool.service"; then
+    echo "Disabling conflicting standard ydotool.service..."
+    sudo systemctl stop ydotool.service || true
+    sudo systemctl disable ydotool.service || true
+fi
+
+if command -v ydotoold &> /dev/null; then
+    # Create our custom service file for ydotoold
     sudo tee /etc/systemd/system/ydotoold.service > /dev/null << 'SVCEOF'
 [Unit]
 Description=ydotool daemon
@@ -67,18 +72,34 @@ After=multi-user.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/ydotoold
+ExecStart=/usr/bin/ydotoold --socket-path=/tmp/.ydotool_socket --socket-perm=0666
 Restart=on-failure
 
 [Install]
 WantedBy=multi-user.target
 SVCEOF
+
     sudo systemctl daemon-reload
     sudo systemctl enable ydotoold
-    sudo systemctl start ydotoold
-    echo "Created and started ydotoold service"
+    sudo systemctl restart ydotoold
+    echo "Created and started ydotoold.service"
 else
-    echo "ydotool 0.1.x detected - no daemon required"
+    echo "ydotool 0.1.x detected - configuring uinput permissions"
+    
+    # Create udev rule to allow input group to write to /dev/uinput
+    echo 'KERNEL=="uinput", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"' | sudo tee /etc/udev/rules.d/80-uinput.rules > /dev/null
+    
+    # Reload rules
+    sudo udevadm control --reload-rules
+    sudo udevadm trigger --sysname-match=uinput
+    
+    # Also verify/fix permissions immediately just in case
+    if [ -e /dev/uinput ]; then
+        sudo chgrp input /dev/uinput
+        sudo chmod 0660 /dev/uinput
+    fi
+    
+    echo "Configured /dev/uinput permissions for input group"
 fi
 echo
 
@@ -106,7 +127,7 @@ echo
 # Install GTK4 development libraries
 echo "Step 5: Installing GTK4 development libraries..."
 case $DISTRO in
-    ubuntu|debian|pop|linuxmint)
+    ubuntu|debian|pop|linuxmint|zorin)
         sudo apt install -y libgtk-4-dev libdbus-1-dev pkg-config
         ;;
     fedora)

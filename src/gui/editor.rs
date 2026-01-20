@@ -1,6 +1,6 @@
 use gtk4::prelude::*;
 use gtk4::{
-    Box as GtkBox, Button, CheckButton, Dialog, DialogFlags, Entry, Frame, Label,
+    Box as GtkBox, CheckButton, Dialog, DialogFlags, Entry, Frame, Label,
     Orientation, ResponseType, ScrolledWindow, TextBuffer, TextView, Window,
 };
 use std::cell::RefCell;
@@ -230,7 +230,10 @@ impl SnippetEditor {
 }
 
 /// Simple dialog for importing snippets
-pub fn show_import_dialog(parent: &impl IsA<Window>) -> Option<std::path::PathBuf> {
+pub fn show_import_dialog<F>(parent: &impl IsA<Window>, on_selected: F)
+where
+    F: Fn(std::path::PathBuf) + 'static,
+{
     let dialog = gtk4::FileChooserDialog::new(
         Some("Import Snippets"),
         Some(parent),
@@ -247,14 +250,25 @@ pub fn show_import_dialog(parent: &impl IsA<Window>) -> Option<std::path::PathBu
     filter.set_name(Some("YAML files"));
     dialog.add_filter(&filter);
 
-    // Note: In GTK4, file chooser dialogs work differently
-    // This is a simplified version
+    dialog.connect_response(move |d, response| {
+        if response == ResponseType::Accept {
+            if let Some(file) = d.file() {
+                if let Some(path) = file.path() {
+                    on_selected(path);
+                }
+            }
+        }
+        d.close();
+    });
+
     dialog.present();
-    None
 }
 
 /// Simple dialog for exporting snippets
-pub fn show_export_dialog(parent: &impl IsA<Window>) -> Option<std::path::PathBuf> {
+pub fn show_export_dialog<F>(parent: &impl IsA<Window>, on_selected: F)
+where
+    F: Fn(std::path::PathBuf) + 'static,
+{
     let dialog = gtk4::FileChooserDialog::new(
         Some("Export Snippets"),
         Some(parent),
@@ -270,8 +284,18 @@ pub fn show_export_dialog(parent: &impl IsA<Window>) -> Option<std::path::PathBu
     filter.set_name(Some("YAML files"));
     dialog.add_filter(&filter);
 
+    dialog.connect_response(move |d, response| {
+        if response == ResponseType::Accept {
+            if let Some(file) = d.file() {
+                if let Some(path) = file.path() {
+                    on_selected(path);
+                }
+            }
+        }
+        d.close();
+    });
+
     dialog.present();
-    None
 }
 
 /// Show a confirmation dialog

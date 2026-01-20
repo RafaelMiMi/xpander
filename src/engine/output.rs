@@ -60,6 +60,30 @@ impl OutputEngine {
                      Or run: sudo ydotoold &"
                 );
             }
+
+            // Verify we can connect to the daemon
+            // We use 'key' with no keys as a check, or 'type' with empty string
+            // 'type' with empty string is safer as a no-op
+            let test_cmd = Command::new("ydotool")
+                .arg("type")
+                .arg("")
+                .output()
+                .await;
+
+            if let Ok(output) = test_cmd {
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    log::warn!("ydotool connection test failed: {}", stderr);
+                    // We don't bail here because maybe only 'type' failed or arguments differ,
+                    // but it's a strong hint of permission issues.
+                    // Actually, if we can't connect, expanding WILL fail.
+                    // But to be safe against version differences, we just log a warning for now?
+                    // No, usually "bind: Permission denied" or similar is strictly fatal.
+                    // But 'ydotool type' might fail for other reasons (empty arg support).
+                    // Let's log warning only.
+                }
+            }
+
         }
         // ydotool 0.1.x works without a daemon
 
@@ -153,6 +177,8 @@ impl OutputEngine {
         // Set socket path if configured
         if let Some(socket) = &self.socket_path {
             cmd.env("YDOTOOL_SOCKET", socket);
+        } else {
+            cmd.env("YDOTOOL_SOCKET", "/tmp/.ydotool_socket");
         }
 
         cmd.stdin(Stdio::null());

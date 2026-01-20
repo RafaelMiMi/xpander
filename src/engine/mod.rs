@@ -2,6 +2,8 @@ pub mod expander;
 pub mod matcher;
 pub mod monitor;
 pub mod output;
+mod trie;
+pub mod keymaps;
 
 pub use expander::{expand_match, ExpansionResult};
 pub use matcher::{MatchResult, Matcher};
@@ -12,7 +14,7 @@ use anyhow::Result;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 
-use crate::config::{Config, Snippet};
+use crate::config::Config;
 
 /// The main expansion engine that ties together monitoring, matching, and output
 pub struct ExpansionEngine {
@@ -68,11 +70,7 @@ impl ExpansionEngine {
 
     /// Check for matches and expand if found
     async fn check_and_expand(&mut self) -> Result<()> {
-        let config = self.config.read().await;
-        let snippets: Vec<Snippet> = config.snippets.clone();
-        drop(config);
-
-        if let Some(match_result) = self.matcher.check_match(&snippets) {
+        if let Some(match_result) = self.matcher.check_match() {
             log::info!(
                 "Match found: '{}' -> '{}'",
                 match_result.typed_trigger,
@@ -94,13 +92,35 @@ impl ExpansionEngine {
         Ok(())
     }
 
-    /// Run the engine with a keyboard event receiver
-    pub async fn run(mut self, mut event_rx: mpsc::Receiver<KeyboardEvent>) -> Result<()> {
+    /// Run the engine with a keyboard event receiver and reload receiver
+    pub async fn run(
+        mut self,
+        mut event_rx: mpsc::Receiver<KeyboardEvent>,
+        mut reload_rx: mpsc::Receiver<()>,
+    ) -> Result<()> {
         log::info!("Expansion engine started");
 
-        while let Some(event) = event_rx.recv().await {
-            if let Err(e) = self.process_event(event).await {
-                log::error!("Error processing event: {}", e);
+        // Initial load of snippets
+        {
+            let config = self.config.read().await;
+            self.matcher.reload(config.snippets.clone());
+            log::info!("Loaded {} snippets into matcher", config.snippets.len());
+        }
+
+        loop {
+            tokio::select! {
+                Some(event) = event_rx.recv() => {
+                    if let Err(e) = self.process_event(event).await {
+                        log::error!("Error processing event: {}", e);
+                    }
+                }
+                Some(_) = reload_rx.recv() => {
+                    log::info!("Reloading engine configuration...");
+                    let config = self.config.read().await;
+                    self.matcher.reload(config.snippets.clone());
+                    log::info!("Reloaded {} snippets", config.snippets.len());
+                }
+                else => break,
             }
         }
 
@@ -113,6 +133,7 @@ impl ExpansionEngine {
 pub async fn start_expansion_pipeline(
     config: Arc<RwLock<Config>>,
     enabled: Arc<RwLock<bool>>,
+    reload_rx: mpsc::Receiver<()>,
 ) -> Result<()> {
     // Check prerequisites
     OutputEngine::check_availability().await?;
@@ -121,7 +142,7 @@ pub async fn start_expansion_pipeline(
     let (event_tx, event_rx) = mpsc::channel::<KeyboardEvent>(256);
 
     // Create and start the keyboard monitor
-    let monitor = KeyboardMonitor::new(event_tx)?;
+    let monitor = KeyboardMonitor::new(event_tx, config.clone())?;
 
     // Create the expansion engine
     let engine = ExpansionEngine::new(config, enabled);
@@ -133,7 +154,7 @@ pub async fn start_expansion_pipeline(
                 log::error!("Keyboard monitor error: {}", e);
             }
         }
-        result = engine.run(event_rx) => {
+        result = engine.run(event_rx, reload_rx) => {
             if let Err(e) = result {
                 log::error!("Expansion engine error: {}", e);
             }

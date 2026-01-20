@@ -11,7 +11,7 @@ use std::rc::Rc;
 
 use crate::config::{Config, ConfigManager, Snippet};
 
-use super::editor::SnippetEditor;
+use super::editor::{SnippetEditor, show_import_dialog, show_export_dialog};
 
 /// Shared state for the config window
 struct WindowState {
@@ -51,6 +51,12 @@ impl ConfigWindow {
         let add_button = Button::with_label("Add");
         add_button.add_css_class("suggested-action");
         header.pack_start(&add_button);
+
+        let import_button = Button::with_label("Import");
+        header.pack_start(&import_button);
+
+        let export_button = Button::with_label("Export");
+        header.pack_start(&export_button);
 
         window.set_titlebar(Some(&header));
 
@@ -108,7 +114,7 @@ impl ConfigWindow {
         config_window.refresh_list();
 
         // Connect signals
-        config_window.setup_signals(&add_button, &enable_switch);
+        config_window.setup_signals(&add_button, &import_button, &export_button, &enable_switch);
 
         Ok(config_window)
     }
@@ -138,7 +144,7 @@ impl ConfigWindow {
     }
 
     /// Set up signal handlers
-    fn setup_signals(&self, add_button: &Button, enable_switch: &Switch) {
+    fn setup_signals(&self, add_button: &Button, import_button: &Button, export_button: &Button, enable_switch: &Switch) {
         // Add button - open editor dialog
         let window = self.window.clone();
         let list_box = self.list_box.clone();
@@ -169,6 +175,76 @@ impl ConfigWindow {
             });
 
             editor.show();
+        });
+
+        // Import button
+        let window = self.window.clone();
+        let state = self.state.clone();
+        let list_box_clone = self.list_box.clone();
+        let stats_label_clone = self.stats_label.clone();
+
+        // Need to use a RefCell or similar to call refresh_list if we didn't duplicate logic.
+        // But refresh_list is a method on &self. We can't easily capture &self.
+        // So we just duplicate the list refresh logic or move it to a standalone function/closure?
+        // Or better: Clone the window components needed.
+
+        // We'll duplicate the refresh logic locally to avoid self capture issues or complex Rc cycles
+        // Actually we can implement a refresh helper that takes the widgets and state.
+        
+        import_button.connect_clicked(move |_| {
+            let state = state.clone();
+            let list_box = list_box_clone.clone();
+            let stats_label = stats_label_clone.clone();
+            
+            show_import_dialog(&window, move |path| {
+                match crate::config::loader::import_snippets(&path) {
+                    Ok(new_snippets) => {
+                        let count = new_snippets.len();
+                        {
+                            let mut s = state.borrow_mut();
+                            s.config.snippets.extend(new_snippets);
+                            
+                            // Save to file
+                            if let Err(e) = ConfigManager::save_config(&s.config_path, &s.config) {
+                                log::error!("Failed to save config: {}", e);
+                            }
+                        }
+                        
+                        log::info!("Imported {} snippets", count);
+                        
+                        // Full refresh of list
+                        while let Some(row) = list_box.row_at_index(0) {
+                            list_box.remove(&row);
+                        }
+                        
+                        let state_borrow = state.borrow();
+                        for (index, snippet) in state_borrow.config.snippets.iter().enumerate() {
+                            Self::add_snippet_row(&list_box, snippet, index);
+                        }
+                        stats_label.set_text(&format!("{} snippets", state_borrow.config.snippets.len()));
+                    }
+                    Err(e) => {
+                        log::error!("Failed to import snippets: {}", e);
+                        // Ideally show error dialog
+                    }
+                }
+            });
+        });
+
+        // Export button
+        let window = self.window.clone();
+        let state = self.state.clone();
+
+        export_button.connect_clicked(move |_| {
+            let state = state.clone();
+            show_export_dialog(&window, move |path| {
+                let s = state.borrow();
+                if let Err(e) = crate::config::loader::export_snippets(&s.config.snippets, &path) {
+                    log::error!("Failed to export snippets: {}", e);
+                } else {
+                    log::info!("Exported snippets to {}", path.display());
+                }
+            });
         });
 
         // Enable switch

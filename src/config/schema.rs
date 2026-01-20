@@ -35,6 +35,10 @@ pub struct Settings {
     /// Path to ydotool socket (optional, uses default if not specified)
     #[serde(default)]
     pub ydotool_socket: Option<String>,
+
+    /// Keyboard layout (qwerty, azerty, qwertz)
+    #[serde(default = "default_layout")]
+    pub layout: String,
 }
 
 impl Default for Settings {
@@ -46,6 +50,7 @@ impl Default for Settings {
             delete_trigger: true,
             keystroke_delay_ms: default_keystroke_delay(),
             ydotool_socket: None,
+            layout: default_layout(),
         }
     }
 }
@@ -56,6 +61,10 @@ fn default_true() -> bool {
 
 fn default_keystroke_delay() -> u64 {
     12
+}
+
+fn default_layout() -> String {
+    "qwerty".to_string()
 }
 
 /// A single text expansion snippet

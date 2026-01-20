@@ -2,6 +2,7 @@ use regex::Regex;
 use std::collections::HashMap;
 
 use crate::config::Snippet;
+use crate::engine::trie::Trie;
 
 /// Result of a trigger match
 #[derive(Debug, Clone)]
@@ -22,7 +23,11 @@ pub struct Matcher {
     buffer: String,
     /// Maximum buffer size (longest trigger + some margin)
     max_buffer_size: usize,
-    /// Compiled regex patterns for regex triggers
+    /// Trie for efficient literal matching
+    trie: Trie,
+    /// List of regex snippets (checked linearly)
+    regex_snippets: Vec<Snippet>,
+    /// Cache for compiled regex patterns
     regex_cache: HashMap<String, Regex>,
     /// Whether we're at a word boundary (for word_boundary triggers)
     at_word_boundary: bool,
@@ -34,6 +39,8 @@ impl Matcher {
         Self {
             buffer: String::with_capacity(256),
             max_buffer_size: 256,
+            trie: Trie::new(),
+            regex_snippets: Vec::new(),
             regex_cache: HashMap::new(),
             at_word_boundary: true, // Start of input is a word boundary
         }
@@ -70,62 +77,74 @@ impl Matcher {
         self.buffer.truncate(new_len);
     }
 
-    /// Check if any snippet matches the current buffer
-    pub fn check_match(&mut self, snippets: &[Snippet]) -> Option<MatchResult> {
+    /// Reload snippets into the Trie and regex list
+    pub fn reload(&mut self, snippets: Vec<Snippet>) {
+        self.trie = Trie::new();
+        self.regex_snippets.clear();
+        self.regex_cache.clear();
+
         for snippet in snippets {
             if !snippet.enabled {
                 continue;
             }
 
-            if let Some(result) = self.check_snippet(snippet) {
-                return Some(result);
+            if snippet.regex {
+                self.regex_snippets.push(snippet);
+            } else {
+                self.trie.insert(snippet);
             }
         }
-        None
     }
 
-    /// Check if a specific snippet matches
-    fn check_snippet(&mut self, snippet: &Snippet) -> Option<MatchResult> {
-        if snippet.regex {
-            self.check_regex_match(snippet)
-        } else {
-            self.check_literal_match(snippet)
-        }
-    }
-
-    /// Check for a literal (non-regex) trigger match
-    fn check_literal_match(&self, snippet: &Snippet) -> Option<MatchResult> {
-        let trigger = &snippet.trigger;
-
-        // Buffer must be at least as long as trigger
-        if self.buffer.len() < trigger.len() {
-            return None;
-        }
-
-        // Check if buffer ends with trigger
-        if !self.buffer.ends_with(trigger) {
-            return None;
-        }
-
-        // If word boundary required, check that trigger started at word boundary
-        if snippet.word_boundary {
-            let trigger_start = self.buffer.len() - trigger.len();
-            if trigger_start > 0 {
-                let char_before = self.buffer.chars().nth(trigger_start - 1);
-                if let Some(ch) = char_before {
-                    if !ch.is_whitespace() && !ch.is_ascii_punctuation() {
-                        return None;
+    /// Check if any snippet matches the current buffer
+    pub fn check_match(&mut self) -> Option<MatchResult> {
+        // 1. Check Trie (O(L))
+        if let Some((snippet, len)) = self.trie.find_match(&self.buffer) {
+            // Verify word boundary if required
+            let valid = if snippet.word_boundary {
+                let buffer_len = self.buffer.len();
+                if buffer_len > len {
+                    let char_before_start = self.buffer.chars().nth(buffer_len - len - 1);
+                    if let Some(ch) = char_before_start {
+                        ch.is_whitespace() || ch.is_ascii_punctuation()
+                    } else {
+                        true
                     }
+                } else {
+                    true // Start of buffer
                 }
+            } else {
+                true
+            };
+
+            if valid {
+                return Some(MatchResult {
+                    snippet: snippet.clone(),
+                    typed_trigger: snippet.trigger.clone(),
+                    chars_to_delete: len,
+                    captures: None,
+                });
             }
         }
 
-        Some(MatchResult {
-            snippet: snippet.clone(),
-            typed_trigger: trigger.clone(),
-            chars_to_delete: trigger.len(),
-            captures: None,
-        })
+        // 2. Check Regex snippets (O(N) but only for regex ones)
+        // We need to clone the snippets to iterate because check_regex_match borrows self mutably
+        // This is a bit annoying. Alternatively, we can inline check_regex_match logic or use RefCell.
+        // Or, we iterate indices.
+        // Actually, check_regex_match only needs &self for buffer and &mut self for cache.
+        // If we split the cache out, it would be easier.
+        // Let's just clone the regex snippets for now, or use a loop with manual indexing?
+        // Cloning Vec<Snippet> is expensive? No, we just need to iterate.
+        // Let's copy the needed logic here or refactor check_regex_match to split borrows.
+        
+        let regex_snippets = self.regex_snippets.clone();
+        for snippet in &regex_snippets {
+             if let Some(result) = self.check_regex_match(snippet) {
+                 return Some(result);
+             }
+        }
+        
+        None
     }
 
     /// Check for a regex trigger match
@@ -135,7 +154,8 @@ impl Matcher {
             regex
         } else {
             // Compile and cache the regex
-            let pattern = format!("({})$", snippet.trigger);
+            let pattern = format!("(?:{})$", snippet.trigger);
+
             match Regex::new(&pattern) {
                 Ok(regex) => {
                     self.regex_cache.insert(snippet.trigger.clone(), regex);
@@ -204,13 +224,14 @@ mod tests {
     fn test_basic_match() {
         let mut matcher = Matcher::new();
         let snippets = vec![make_snippet(";email", "test@example.com")];
+        matcher.reload(snippets);
 
         // Type the trigger
         for ch in ";email".chars() {
             matcher.push_char(ch);
         }
 
-        let result = matcher.check_match(&snippets);
+        let result = matcher.check_match();
         assert!(result.is_some());
 
         let result = result.unwrap();
@@ -222,13 +243,14 @@ mod tests {
     fn test_no_match() {
         let mut matcher = Matcher::new();
         let snippets = vec![make_snippet(";email", "test@example.com")];
+        matcher.reload(snippets);
 
         // Type something that doesn't match
         for ch in ";emai".chars() {
             matcher.push_char(ch);
         }
 
-        let result = matcher.check_match(&snippets);
+        let result = matcher.check_match();
         assert!(result.is_none());
     }
 
@@ -238,25 +260,27 @@ mod tests {
         let mut snippet = make_snippet("btw", "by the way");
         snippet.word_boundary = true;
         let snippets = vec![snippet];
+        matcher.reload(snippets);
 
         // Type "btw" without word boundary - should not match
         for ch in "hellobtw".chars() {
             matcher.push_char(ch);
         }
-        assert!(matcher.check_match(&snippets).is_none());
+        assert!(matcher.check_match().is_none());
 
         // Clear and try with word boundary
         matcher.clear();
         for ch in "hello btw".chars() {
             matcher.push_char(ch);
         }
-        assert!(matcher.check_match(&snippets).is_some());
+        assert!(matcher.check_match().is_some());
     }
 
     #[test]
     fn test_backspace() {
         let mut matcher = Matcher::new();
         let snippets = vec![make_snippet(";test", "replacement")];
+        matcher.reload(snippets);
 
         // Type and then backspace
         for ch in ";tess".chars() {
@@ -265,7 +289,7 @@ mod tests {
         matcher.handle_backspace();
         matcher.push_char('t');
 
-        let result = matcher.check_match(&snippets);
+        let result = matcher.check_match();
         assert!(result.is_some());
     }
 
@@ -275,12 +299,13 @@ mod tests {
         let mut snippet = make_snippet(r";d(\d+)", "Number: $1");
         snippet.regex = true;
         let snippets = vec![snippet];
+        matcher.reload(snippets);
 
         for ch in ";d123".chars() {
             matcher.push_char(ch);
         }
 
-        let result = matcher.check_match(&snippets);
+        let result = matcher.check_match();
         assert!(result.is_some());
 
         let result = result.unwrap();
@@ -293,11 +318,12 @@ mod tests {
         let mut snippet = make_snippet(";test", "replacement");
         snippet.enabled = false;
         let snippets = vec![snippet];
+        matcher.reload(snippets);
 
         for ch in ";test".chars() {
             matcher.push_char(ch);
         }
 
-        assert!(matcher.check_match(&snippets).is_none());
+        assert!(matcher.check_match().is_none());
     }
 }

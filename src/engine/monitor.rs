@@ -1,8 +1,11 @@
 use anyhow::{Context, Result};
 use evdev::{Device, EventType, InputEventKind, Key};
-use std::collections::HashMap;
 use std::path::PathBuf;
-use tokio::sync::mpsc;
+use std::sync::Arc;
+use tokio::sync::{mpsc, RwLock};
+
+use crate::config::Config;
+use crate::engine::keymaps::KeyMap;
 
 /// Events emitted by the keyboard monitor
 #[derive(Debug, Clone)]
@@ -21,103 +24,16 @@ pub enum KeyboardEvent {
     Escape,
 }
 
-/// Maps evdev key codes to characters
-struct KeyMapper {
-    normal: HashMap<Key, char>,
-    shifted: HashMap<Key, char>,
-}
-
-impl KeyMapper {
-    fn new() -> Self {
-        let mut normal = HashMap::new();
-        let mut shifted = HashMap::new();
-
-        // Letters (lowercase normal, uppercase shifted)
-        let letters = [
-            (Key::KEY_A, 'a', 'A'), (Key::KEY_B, 'b', 'B'), (Key::KEY_C, 'c', 'C'),
-            (Key::KEY_D, 'd', 'D'), (Key::KEY_E, 'e', 'E'), (Key::KEY_F, 'f', 'F'),
-            (Key::KEY_G, 'g', 'G'), (Key::KEY_H, 'h', 'H'), (Key::KEY_I, 'i', 'I'),
-            (Key::KEY_J, 'j', 'J'), (Key::KEY_K, 'k', 'K'), (Key::KEY_L, 'l', 'L'),
-            (Key::KEY_M, 'm', 'M'), (Key::KEY_N, 'n', 'N'), (Key::KEY_O, 'o', 'O'),
-            (Key::KEY_P, 'p', 'P'), (Key::KEY_Q, 'q', 'Q'), (Key::KEY_R, 'r', 'R'),
-            (Key::KEY_S, 's', 'S'), (Key::KEY_T, 't', 'T'), (Key::KEY_U, 'u', 'U'),
-            (Key::KEY_V, 'v', 'V'), (Key::KEY_W, 'w', 'W'), (Key::KEY_X, 'x', 'X'),
-            (Key::KEY_Y, 'y', 'Y'), (Key::KEY_Z, 'z', 'Z'),
-        ];
-
-        for (key, lower, upper) in letters {
-            normal.insert(key, lower);
-            shifted.insert(key, upper);
-        }
-
-        // Numbers and their shifted symbols
-        let numbers = [
-            (Key::KEY_1, '1', '!'), (Key::KEY_2, '2', '@'), (Key::KEY_3, '3', '#'),
-            (Key::KEY_4, '4', '$'), (Key::KEY_5, '5', '%'), (Key::KEY_6, '6', '^'),
-            (Key::KEY_7, '7', '&'), (Key::KEY_8, '8', '*'), (Key::KEY_9, '9', '('),
-            (Key::KEY_0, '0', ')'),
-        ];
-
-        for (key, num, sym) in numbers {
-            normal.insert(key, num);
-            shifted.insert(key, sym);
-        }
-
-        // Punctuation and symbols
-        let punctuation = [
-            (Key::KEY_MINUS, '-', '_'),
-            (Key::KEY_EQUAL, '=', '+'),
-            (Key::KEY_LEFTBRACE, '[', '{'),
-            (Key::KEY_RIGHTBRACE, ']', '}'),
-            (Key::KEY_SEMICOLON, ';', ':'),
-            (Key::KEY_APOSTROPHE, '\'', '"'),
-            (Key::KEY_GRAVE, '`', '~'),
-            (Key::KEY_BACKSLASH, '\\', '|'),
-            (Key::KEY_COMMA, ',', '<'),
-            (Key::KEY_DOT, '.', '>'),
-            (Key::KEY_SLASH, '/', '?'),
-            (Key::KEY_SPACE, ' ', ' '),
-        ];
-
-        for (key, norm, shift) in punctuation {
-            normal.insert(key, norm);
-            shifted.insert(key, shift);
-        }
-
-        Self { normal, shifted }
-    }
-
-    fn map_key(&self, key: Key, shift: bool, caps_lock: bool) -> Option<char> {
-        let base_char = if shift {
-            self.shifted.get(&key).copied()
-        } else {
-            self.normal.get(&key).copied()
-        };
-
-        // Handle caps lock for letters
-        base_char.map(|c| {
-            if c.is_ascii_alphabetic() && caps_lock {
-                if shift {
-                    c.to_ascii_lowercase()
-                } else {
-                    c.to_ascii_uppercase()
-                }
-            } else {
-                c
-            }
-        })
-    }
-}
-
 /// Keyboard monitor that reads from evdev devices
 pub struct KeyboardMonitor {
     devices: Vec<Device>,
     event_tx: mpsc::Sender<KeyboardEvent>,
+    config: Arc<RwLock<Config>>,
 }
 
 impl KeyboardMonitor {
     /// Create a new keyboard monitor
-    pub fn new(event_tx: mpsc::Sender<KeyboardEvent>) -> Result<Self> {
+    pub fn new(event_tx: mpsc::Sender<KeyboardEvent>, config: Arc<RwLock<Config>>) -> Result<Self> {
         let devices = Self::find_keyboard_devices()?;
 
         if devices.is_empty() {
@@ -134,7 +50,7 @@ impl KeyboardMonitor {
             }
         }
 
-        Ok(Self { devices, event_tx })
+        Ok(Self { devices, event_tx, config })
     }
 
     /// Find all keyboard devices in /dev/input/
@@ -199,9 +115,13 @@ impl KeyboardMonitor {
 
     /// Start monitoring keyboard events
     pub async fn run(self) -> Result<()> {
-        let key_mapper = KeyMapper::new();
         let mut shift_pressed = false;
         let mut caps_lock = false;
+
+        // Dynamic layout handling
+        let mut current_layout = String::new();
+        // Initialize with default/empty, will be updated in loop
+        let mut key_mapper = KeyMap::new("qwerty");
 
         // We need to poll all devices. For simplicity, we'll use blocking reads
         // in a separate thread and communicate via channels.
@@ -221,6 +141,16 @@ impl KeyboardMonitor {
 
         // Process events
         while let Some((key, value)) = internal_rx.recv().await {
+            // Check for layout change
+            {
+                let config = self.config.read().await;
+                if config.settings.layout != current_layout {
+                    current_layout = config.settings.layout.clone();
+                    key_mapper = KeyMap::new(&current_layout);
+                    log::info!("Keyboard layout switched to: {}", current_layout);
+                }
+            }
+
             // value: 0 = release, 1 = press, 2 = repeat
             let is_press = value == 1;
             let is_release = value == 0;
@@ -245,6 +175,9 @@ impl KeyboardMonitor {
                     continue;
                 }
             }
+
+            log::debug!("Key press detected: {:?}", key);
+
 
             let event = match key {
                 Key::KEY_BACKSPACE => Some(KeyboardEvent::Backspace),
@@ -305,7 +238,7 @@ mod tests {
 
     #[test]
     fn test_key_mapper() {
-        let mapper = KeyMapper::new();
+        let mapper = KeyMap::new("qwerty");
 
         // Test letters
         assert_eq!(mapper.map_key(Key::KEY_A, false, false), Some('a'));
