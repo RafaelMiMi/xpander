@@ -11,7 +11,7 @@ static VARIABLE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// Expand all variables in the given text
-pub fn expand_variables(text: &str) -> Result<String> {
+pub fn expand_variables(text: &str, custom_vars: &serde_yaml::Value) -> Result<String> {
     let mut result = text.to_string();
     let mut offset: i64 = 0;
 
@@ -19,7 +19,7 @@ pub fn expand_variables(text: &str) -> Result<String> {
         let full_match = cap.get(0).unwrap();
         let var_content = &cap[1];
 
-        let replacement = expand_single_variable(var_content)?;
+        let replacement = expand_single_variable(var_content, custom_vars)?;
 
         let start = (full_match.start() as i64 + offset) as usize;
         let end = (full_match.end() as i64 + offset) as usize;
@@ -32,8 +32,13 @@ pub fn expand_variables(text: &str) -> Result<String> {
 }
 
 /// Expand a single variable (without the {{ }} markers)
-fn expand_single_variable(var: &str) -> Result<String> {
+fn expand_single_variable(var: &str, custom_vars: &serde_yaml::Value) -> Result<String> {
     let var = var.trim();
+
+    // Check for custom variable first
+    if let Some(val) = expand_custom_variable(var, custom_vars) {
+        return Ok(val);
+    }
 
     // Handle different variable types
     if var == "date" {
@@ -160,6 +165,34 @@ pub fn find_cursor_position(text: &str) -> (String, Option<usize>) {
     .unwrap_or_else(|| (text.to_string(), None))
 }
 
+/// Expand custom variable using dot notation (e.g. "user.email")
+fn expand_custom_variable(var_path: &str, custom_vars: &serde_yaml::Value) -> Option<String> {
+    let parts: Vec<&str> = var_path.split('.').collect();
+    let mut current = custom_vars;
+
+    for part in parts {
+        match current {
+            serde_yaml::Value::Mapping(map) => {
+                // Try exact match first
+                if let Some(val) = map.get(&serde_yaml::Value::String(part.to_string())) {
+                    current = val;
+                } else {
+                    return None;
+                }
+            }
+            _ => return None,
+        }
+    }
+
+    match current {
+        serde_yaml::Value::String(s) => Some(s.clone()),
+        serde_yaml::Value::Number(n) => Some(n.to_string()),
+        serde_yaml::Value::Bool(b) => Some(b.to_string()),
+        serde_yaml::Value::Null => Some("".to_string()),
+        _ => None, // Complex types (arrays/objects) not supported as direct replacement
+    }
+}
+
 /// Apply case propagation from trigger to replacement
 pub fn propagate_case(trigger: &str, replacement: &str) -> String {
     if trigger.is_empty() || replacement.is_empty() {
@@ -247,7 +280,37 @@ mod tests {
     fn test_expand_variables() {
         std::env::set_var("TEST_USER", "testuser");
         let text = "Hello {{env:TEST_USER}}, today is {{date}}";
-        let result = expand_variables(text).unwrap();
+        let result = expand_variables(text, &serde_yaml::Value::Null).unwrap();
+        assert!(result.contains("testuser"));
+        assert!(!result.contains("{{"));
+    }
+
+    #[test]
+    fn test_custom_variables() {
+        let yaml = r#"
+        user:
+            name: "Rafa"
+            contact:
+                email: "test@example.com"
+            age: 30
+        "#;
+        let vars: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+
+        let text = "Hi {{user.name}}, email: {{user.contact.email}}, age: {{user.age}}";
+        let result = expand_variables(text, &vars).unwrap();
+
+        assert!(result.contains("Hi Rafa"));
+        assert!(result.contains("email: test@example.com"));
+        assert!(result.contains("age: 30"));
+    }
+
+    #[test]
+    fn test_expand_variables_default() {
+        // Test with empty custom variables (should behave like before)
+        std::env::set_var("TEST_USER_DEF", "testuser");
+        let text = "Hello {{env:TEST_USER_DEF}}, today is {{date}}";
+        let vars = serde_yaml::Value::Null;
+        let result = expand_variables(text, &vars).unwrap();
         assert!(result.contains("testuser"));
         assert!(!result.contains("{{"));
     }

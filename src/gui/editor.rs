@@ -299,11 +299,14 @@ where
 }
 
 /// Show a confirmation dialog
-pub fn show_confirm_dialog(
+pub fn show_confirm_dialog<F>(
     parent: &impl IsA<Window>,
     title: &str,
     message: &str,
-) -> bool {
+    on_response: F,
+) where
+    F: Fn(bool) + 'static,
+{
     let dialog = gtk4::MessageDialog::new(
         Some(parent),
         DialogFlags::MODAL | DialogFlags::DESTROY_WITH_PARENT,
@@ -313,7 +316,67 @@ pub fn show_confirm_dialog(
     );
     dialog.set_title(Some(title));
 
-    // Note: GTK4 dialogs are async, this is simplified
+    dialog.connect_response(move |d, response| {
+        let confirmed = response == ResponseType::Yes;
+        d.close();
+        on_response(confirmed);
+    });
+
     dialog.present();
-    false
+}
+
+/// Show a simple input dialog (e.g. for folder names)
+pub fn show_input_dialog<F>(
+    parent: &impl IsA<Window>,
+    title: &str,
+    initial_text: &str,
+    on_response: F,
+) where
+    F: Fn(Option<String>) + 'static,
+{
+    let dialog = Dialog::with_buttons(
+        Some(title),
+        Some(parent),
+        DialogFlags::MODAL | DialogFlags::DESTROY_WITH_PARENT,
+        &[
+            ("Cancel", ResponseType::Cancel),
+            ("OK", ResponseType::Accept),
+        ],
+    );
+    dialog.set_default_width(300);
+
+    let content = dialog.content_area();
+    content.set_margin_start(12);
+    content.set_margin_end(12);
+    content.set_margin_top(12);
+    content.set_margin_bottom(12);
+    content.set_spacing(8);
+
+    let entry = Entry::new();
+    entry.set_text(initial_text);
+    entry.set_activates_default(true);
+    content.append(&entry);
+
+    if let Some(btn) = dialog.widget_for_response(ResponseType::Accept) {
+        btn.add_css_class("suggested-action");
+        dialog.set_default_widget(Some(&btn));
+    }
+
+    let entry_clone = entry.clone();
+    dialog.connect_response(move |d, response| {
+        let result = if response == ResponseType::Accept {
+            let text = entry_clone.text().to_string();
+            if text.trim().is_empty() {
+                None
+            } else {
+                Some(text)
+            }
+        } else {
+            None
+        };
+        d.close();
+        on_response(result);
+    });
+
+    dialog.present();
 }

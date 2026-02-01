@@ -5,8 +5,8 @@ pub mod output;
 mod trie;
 pub mod keymaps;
 
-pub use expander::{expand_match, ExpansionResult};
-pub use matcher::{MatchResult, Matcher};
+pub use expander::expand_match;
+pub use matcher::Matcher;
 pub use monitor::{KeyboardEvent, KeyboardMonitor};
 pub use output::OutputEngine;
 
@@ -35,10 +35,7 @@ impl ExpansionEngine {
         }
     }
 
-    /// Update output engine settings
-    pub fn update_settings(&mut self, keystroke_delay: u64, socket_path: Option<String>) {
-        self.output = OutputEngine::new(keystroke_delay, socket_path);
-    }
+
 
     /// Process a keyboard event
     pub async fn process_event(&mut self, event: KeyboardEvent) -> Result<()> {
@@ -71,17 +68,23 @@ impl ExpansionEngine {
     /// Check for matches and expand if found
     async fn check_and_expand(&mut self) -> Result<()> {
         if let Some(match_result) = self.matcher.check_match() {
-            log::info!(
-                "Match found: '{}' -> '{}'",
+            log::debug!(
+                "Match found: '{}' -> <redacted len={}>",
                 match_result.typed_trigger,
-                match_result.snippet.replace
+                match_result.snippet.replace.len()
             );
 
             // Remove the matched text from the buffer
             self.matcher.remove_last(match_result.chars_to_delete);
 
+            // Get variables from config
+            let variables = {
+                let config = self.config.read().await;
+                config.variables.clone()
+            };
+
             // Expand the match
-            let expansion = expand_match(&match_result)?;
+            let expansion = expand_match(&match_result, &variables)?;
 
             // Output the expansion
             self.output.output_expansion(&expansion).await?;
@@ -103,8 +106,9 @@ impl ExpansionEngine {
         // Initial load of snippets
         {
             let config = self.config.read().await;
-            self.matcher.reload(config.snippets.clone());
-            log::info!("Loaded {} snippets into matcher", config.snippets.len());
+            let flattened_snippets = crate::config::loader::ConfigManager::flatten_snippets(&config.snippets);
+            self.matcher.reload(flattened_snippets.clone());
+            log::info!("Loaded {} snippets into matcher", flattened_snippets.len());
         }
 
         loop {
@@ -117,12 +121,14 @@ impl ExpansionEngine {
                 Some(_) = reload_rx.recv() => {
                     log::info!("Reloading engine configuration...");
                     let config = self.config.read().await;
-                    self.matcher.reload(config.snippets.clone());
-                    log::info!("Reloaded {} snippets", config.snippets.len());
+                    let flattened_snippets = crate::config::loader::ConfigManager::flatten_snippets(&config.snippets);
+                    self.matcher.reload(flattened_snippets.clone());
+                    log::info!("Reloaded {} snippets", flattened_snippets.len());
                 }
                 else => break,
             }
         }
+
 
         log::info!("Expansion engine stopped");
         Ok(())

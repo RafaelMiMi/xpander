@@ -30,9 +30,34 @@ async fn main() -> Result<()> {
     .init();
 
     // Check for --gui flag to open config window
+    // Check for --gui flag, or --export/--import
     let args: Vec<String> = env::args().collect();
-    if args.iter().any(|a| a == "--gui" || a == "-g") {
-        return run_config_gui().await;
+    
+    // Simple argument parsing
+    if args.len() > 1 {
+        if args.iter().any(|a| a == "--gui" || a == "-g") {
+            return run_config_gui().await;
+        }
+        
+        // Handle export
+        if let Some(pos) = args.iter().position(|a| a == "--export") {
+            if let Some(path) = args.get(pos + 1) {
+                return run_export(path).await;
+            } else {
+                eprintln!("Error: --export requires a file path");
+                std::process::exit(1);
+            }
+        }
+        
+        // Handle import
+        if let Some(pos) = args.iter().position(|a| a == "--import") {
+            if let Some(path) = args.get(pos + 1) {
+                return run_import(path).await;
+            } else {
+                eprintln!("Error: --import requires a file path");
+                std::process::exit(1);
+            }
+        }
     }
 
     log::info!("Starting xpander text expansion daemon");
@@ -223,6 +248,55 @@ fn open_file_in_editor(path: &std::path::Path) -> Result<()> {
     anyhow::bail!("No suitable editor found")
 }
 
+/// Run export command
+async fn run_export(path_str: &str) -> Result<()> {
+    let (config_manager, _) = ConfigManager::new().await?;
+    let config = config_manager.get_config().await;
+    let path = std::path::Path::new(path_str);
+    
+    config::loader::export_custom_entries(&config.snippets, &config.variables, path)?;
+    println!("Successfully exported {} snippets and variables to {}", config.snippets.len(), path.display());
+    Ok(())
+}
+
+/// Run import command
+async fn run_import(path_str: &str) -> Result<()> {
+    let path = std::path::Path::new(path_str);
+    if !path.exists() {
+        anyhow::bail!("Import file not found: {}", path.display());
+    }
+
+    let data = config::loader::import_custom_entries(path)?;
+    
+    let (config_manager, _) = ConfigManager::new().await?;
+    let mut config = config_manager.get_config().await.clone();
+    
+    // Merge logic: append new snippets, merge variables
+    // For simplicity, we'll append snippets and overwrite variables if they clash, 
+    // but ideally we'd merge deeply.
+    // Let's just append snippets.
+    let old_count = config.snippets.len();
+    config.snippets.extend(data.snippets);
+    
+    // For variables, if it's a mapping, we can try to merge.
+    // If it's something else, we overwrite.
+    match (&mut config.variables, data.variables) {
+        (serde_yaml::Value::Mapping(map), serde_yaml::Value::Mapping(new_map)) => {
+            for (k, v) in new_map {
+                map.insert(k, v);
+            }
+        },
+        (current, new) => {
+            *current = new;
+        }
+    }
+    
+    config_manager.update_config(config.clone()).await?;
+    println!("Successfully imported. Snippets: {} -> {}. Variables updated.", old_count, config.snippets.len());
+    
+    Ok(())
+}
+
 /// Run the GTK configuration GUI
 async fn run_config_gui() -> Result<()> {
     use gtk4::prelude::*;
@@ -248,6 +322,8 @@ OPTIONS:
     -h, --help      Show this help message
     -v, --version   Show version information
     -c, --config    Path to config file (default: ~/.config/xpander/config.yaml)
+    --export PATH   Export snippets and variables to file
+    --import PATH   Import snippets and variables from file
 
 PREREQUISITES:
     1. Install ydotool:

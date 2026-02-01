@@ -6,7 +6,10 @@ pub struct Config {
     #[serde(default)]
     pub settings: Settings,
     #[serde(default)]
-    pub snippets: Vec<Snippet>,
+    pub snippets: Vec<SnippetNode>,
+    
+    #[serde(default)]
+    pub variables: serde_yaml::Value,
 }
 
 /// Global application settings
@@ -65,6 +68,29 @@ fn default_keystroke_delay() -> u64 {
 
 fn default_layout() -> String {
     "qwerty".to_string()
+}
+
+/// A node in the snippet hierarchy (either a snippet or a folder)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum SnippetNode {
+    Folder(Folder),
+    Snippet(Snippet),
+}
+
+/// A folder containing snippets or other folders
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Folder {
+    /// Name of the folder
+    pub folder: String,
+    
+    /// Items inside the folder
+    #[serde(default)]
+    pub items: Vec<SnippetNode>,
+    
+    /// Whether this folder is enabled
+    #[serde(default = "default_true")]
+    pub enabled: bool,
 }
 
 /// A single text expansion snippet
@@ -190,7 +216,47 @@ snippets:
         assert!(config.settings.enable_sound);
         assert!(!config.settings.notify_on_expand);
         assert_eq!(config.snippets.len(), 1);
-        assert_eq!(config.snippets[0].trigger, ";test");
-        assert!(config.snippets[0].propagate_case);
+        
+        match &config.snippets[0] {
+            SnippetNode::Snippet(s) => {
+                assert_eq!(s.trigger, ";test");
+                assert!(s.propagate_case);
+            }
+            _ => panic!("Expected snippet"),
+        }
+    }
+    
+    #[test]
+    fn test_deserialize_nested_config() {
+        let yaml = r#"
+snippets:
+  - folder: "Work"
+    items:
+      - trigger: ";sig"
+        replace: "Work Signature"
+  - trigger: ";home"
+    replace: "Home Address"
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.snippets.len(), 2);
+        
+        // First item should be a folder
+        match &config.snippets[0] {
+            SnippetNode::Folder(f) => {
+                assert_eq!(f.folder, "Work");
+                assert_eq!(f.items.len(), 1);
+                match &f.items[0] {
+                    SnippetNode::Snippet(s) => assert_eq!(s.trigger, ";sig"),
+                    _ => panic!("Expected snippet inside folder"),
+                }
+            }
+            _ => panic!("Expected folder"),
+        }
+        
+        // Second item should be a snippet
+        match &config.snippets[1] {
+            SnippetNode::Snippet(s) => assert_eq!(s.trigger, ";home"),
+            _ => panic!("Expected snippet"),
+        }
     }
 }

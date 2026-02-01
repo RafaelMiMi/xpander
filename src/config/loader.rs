@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use notify::{Config as NotifyConfig, Event, RecommendedWatcher, RecursiveMode, Watcher};
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
@@ -87,6 +88,7 @@ impl ConfigManager {
         tx: mpsc::Sender<Config>,
     ) -> Result<RecommendedWatcher> {
         let path = config_path.to_path_buf();
+        let handle = tokio::runtime::Handle::current();
 
         let mut watcher = RecommendedWatcher::new(
             move |res: Result<Event, notify::Error>| {
@@ -101,7 +103,7 @@ impl ConfigManager {
                                 let new_config_clone = new_config.clone();
 
                                 // Update config in a blocking way since we're in the notify callback
-                                tokio::spawn(async move {
+                                handle.spawn(async move {
                                     let mut cfg = config.write().await;
                                     *cfg = new_config_clone.clone();
                                     if tx.send(new_config_clone).await.is_err() {
@@ -147,15 +149,16 @@ impl ConfigManager {
         &self.config_path
     }
 
-    /// Add a new snippet to the configuration
+    /// Add a new snippet to the configuration (at the top level)
     pub async fn add_snippet(&self, snippet: super::schema::Snippet) -> Result<()> {
         let mut config = self.config.write().await;
-        config.snippets.push(snippet);
+        config.snippets.push(super::schema::SnippetNode::Snippet(snippet));
         Self::save_config(&self.config_path, &config)?;
         Ok(())
     }
 
-    /// Remove a snippet by index
+    /// Remove a snippet by index from the flattened list (for simple management)
+    /// Note: This is checking the top level only for now as basic management
     pub async fn remove_snippet(&self, index: usize) -> Result<()> {
         let mut config = self.config.write().await;
         if index < config.snippets.len() {
@@ -165,11 +168,11 @@ impl ConfigManager {
         Ok(())
     }
 
-    /// Update a snippet at a specific index
+    /// Update a snippet at a specific index (top level only for now)
     pub async fn update_snippet(&self, index: usize, snippet: super::schema::Snippet) -> Result<()> {
         let mut config = self.config.write().await;
         if index < config.snippets.len() {
-            config.snippets[index] = snippet;
+            config.snippets[index] = super::schema::SnippetNode::Snippet(snippet);
             Self::save_config(&self.config_path, &config)?;
         }
         Ok(())
@@ -182,10 +185,34 @@ impl ConfigManager {
         Self::save_config(&self.config_path, &config)?;
         Ok(config.settings.enabled)
     }
+
+    /// Flatten snippets from the hierarchy into a single list
+    pub fn flatten_snippets(nodes: &[super::schema::SnippetNode]) -> Vec<super::schema::Snippet> {
+        let mut result = Vec::new();
+        Self::flatten_recursive(nodes, &mut result);
+        result
+    }
+
+    fn flatten_recursive(nodes: &[super::schema::SnippetNode], result: &mut Vec<super::schema::Snippet>) {
+        for node in nodes {
+            match node {
+                super::schema::SnippetNode::Snippet(s) => {
+                    if s.enabled {
+                        result.push(s.clone());
+                    }
+                }
+                super::schema::SnippetNode::Folder(f) => {
+                    if f.enabled {
+                        Self::flatten_recursive(&f.items, result);
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Export snippets to a YAML file
-pub fn export_snippets(snippets: &[super::schema::Snippet], path: &Path) -> Result<()> {
+pub fn export_snippets(snippets: &[super::schema::SnippetNode], path: &Path) -> Result<()> {
     let content = serde_yaml::to_string(snippets)
         .context("Failed to serialize snippets")?;
     std::fs::write(path, content)
@@ -193,13 +220,34 @@ pub fn export_snippets(snippets: &[super::schema::Snippet], path: &Path) -> Resu
     Ok(())
 }
 
-/// Import snippets from a YAML file
-pub fn import_snippets(path: &Path) -> Result<Vec<super::schema::Snippet>> {
+
+/// Structure for exporting custom entries (snippets and variables)
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ExportData {
+    pub snippets: Vec<super::schema::SnippetNode>,
+    pub variables: serde_yaml::Value,
+}
+
+/// Export snippets and variables to a YAML file
+pub fn export_custom_entries(snippets: &[super::schema::SnippetNode], variables: &serde_yaml::Value, path: &Path) -> Result<()> {
+    let data = ExportData {
+        snippets: snippets.to_vec(),
+        variables: variables.clone(),
+    };
+    let content = serde_yaml::to_string(&data)
+        .context("Failed to serialize custom entries")?;
+    std::fs::write(path, content)
+        .with_context(|| format!("Failed to write export file: {}", path.display()))?;
+    Ok(())
+}
+
+/// Import snippets and variables from a YAML file
+pub fn import_custom_entries(path: &Path) -> Result<ExportData> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read import file: {}", path.display()))?;
-    let snippets: Vec<super::schema::Snippet> = serde_yaml::from_str(&content)
+    let data: ExportData = serde_yaml::from_str(&content)
         .with_context(|| format!("Failed to parse import file: {}", path.display()))?;
-    Ok(snippets)
+    Ok(data)
 }
 
 #[cfg(test)]
@@ -213,12 +261,17 @@ mod tests {
         let path = dir.path().join("config.yaml");
 
         let mut config = Config::default();
-        config.snippets.push(super::super::schema::Snippet::new(";test", "hello"));
+        config.snippets.push(super::super::schema::SnippetNode::Snippet(
+            super::super::schema::Snippet::new(";test", "hello")
+        ));
 
         ConfigManager::save_config(&path, &config).unwrap();
         let loaded = ConfigManager::load_config(&path).unwrap();
 
         assert_eq!(loaded.snippets.len(), 1);
-        assert_eq!(loaded.snippets[0].trigger, ";test");
+        match &loaded.snippets[0] {
+            super::super::schema::SnippetNode::Snippet(s) => assert_eq!(s.trigger, ";test"),
+            _ => panic!("Expected snippet"),
+        }
     }
 }

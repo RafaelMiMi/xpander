@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
 use evdev::{Device, EventType, InputEventKind, Key};
-use std::path::PathBuf;
+use notify::{Config as NotifyConfig, Event, RecommendedWatcher, RecursiveMode, Watcher};
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 
@@ -26,7 +28,7 @@ pub enum KeyboardEvent {
 
 /// Keyboard monitor that reads from evdev devices
 pub struct KeyboardMonitor {
-    devices: Vec<Device>,
+    devices: Vec<(Device, PathBuf)>,
     event_tx: mpsc::Sender<KeyboardEvent>,
     config: Arc<RwLock<Config>>,
 }
@@ -35,18 +37,16 @@ impl KeyboardMonitor {
     /// Create a new keyboard monitor
     pub fn new(event_tx: mpsc::Sender<KeyboardEvent>, config: Arc<RwLock<Config>>) -> Result<Self> {
         let devices = Self::find_keyboard_devices()?;
-
+        
+        // We don't error if no devices are found initially, as we now support hot-plugging
         if devices.is_empty() {
-            anyhow::bail!(
-                "No keyboard devices found. Make sure you have permission to read from /dev/input/event* \
-                 (add your user to the 'input' group: sudo usermod -aG input $USER)"
-            );
-        }
-
-        log::info!("Found {} keyboard device(s)", devices.len());
-        for device in &devices {
-            if let Some(name) = device.name() {
-                log::debug!("  - {}", name);
+            log::info!("No keyboard devices found immediately. Waiting for hot-plug events...");
+        } else {
+            log::info!("Found {} keyboard device(s)", devices.len());
+            for (device, path) in &devices {
+                if let Some(name) = device.name() {
+                    log::debug!("  - {} ({:?})", name, path);
+                }
             }
         }
 
@@ -54,7 +54,7 @@ impl KeyboardMonitor {
     }
 
     /// Find all keyboard devices in /dev/input/
-    fn find_keyboard_devices() -> Result<Vec<Device>> {
+    fn find_keyboard_devices() -> Result<Vec<(Device, PathBuf)>> {
         let mut keyboards = Vec::new();
 
         let input_dir = PathBuf::from("/dev/input");
@@ -82,9 +82,7 @@ impl KeyboardMonitor {
                 Ok(device) => {
                     // Check if this device has keyboard capabilities
                     if Self::is_keyboard(&device) {
-                        log::debug!("Found keyboard: {} ({:?})",
-                            device.name().unwrap_or("Unknown"), path);
-                        keyboards.push(device);
+                        keyboards.push((device, path));
                     }
                 }
                 Err(e) => {
@@ -123,87 +121,128 @@ impl KeyboardMonitor {
         // Initialize with default/empty, will be updated in loop
         let mut key_mapper = KeyMap::new("qwerty");
 
-        // We need to poll all devices. For simplicity, we'll use blocking reads
-        // in a separate thread and communicate via channels.
-
+        // Channel for internal key events from device reading threads
         let (internal_tx, mut internal_rx) = mpsc::channel::<(Key, i32)>(256);
 
-        // Spawn blocking threads for each device
-        for device in self.devices {
+        // Track monitored paths to avoid duplicates
+        let mut monitored_paths = HashSet::new();
+
+        // Spawn threads for initial devices
+        for (device, path) in self.devices {
+            monitored_paths.insert(path);
+            
             let tx = internal_tx.clone();
             std::thread::spawn(move || {
                 Self::device_reader(device, tx);
             });
         }
 
-        // Drop the original sender so the channel closes when all devices are done
-        drop(internal_tx);
+        // Setup watcher for hot-plugging
+        let (watcher_tx, mut watcher_rx) = mpsc::channel::<PathBuf>(16);
+        let mut watcher = Self::setup_watcher(watcher_tx)?;
 
         // Process events
-        while let Some((key, value)) = internal_rx.recv().await {
-            // Check for layout change
-            {
-                let config = self.config.read().await;
-                if config.settings.layout != current_layout {
-                    current_layout = config.settings.layout.clone();
-                    key_mapper = KeyMap::new(&current_layout);
-                    log::info!("Keyboard layout switched to: {}", current_layout);
-                }
-            }
-
-            // value: 0 = release, 1 = press, 2 = repeat
-            let is_press = value == 1;
-            let is_release = value == 0;
-
-            // Track modifier states
-            match key {
-                Key::KEY_LEFTSHIFT | Key::KEY_RIGHTSHIFT => {
-                    shift_pressed = is_press;
-                    continue;
-                }
-                Key::KEY_CAPSLOCK if is_press => {
-                    caps_lock = !caps_lock;
-                    continue;
-                }
-                _ => {}
-            }
-
-            // Only process key presses (not releases or repeats for most keys)
-            if !is_press {
-                // Allow backspace repeat
-                if key != Key::KEY_BACKSPACE || is_release {
-                    continue;
-                }
-            }
-
-            log::debug!("Key press detected: {:?}", key);
-
-
-            let event = match key {
-                Key::KEY_BACKSPACE => Some(KeyboardEvent::Backspace),
-                Key::KEY_ENTER | Key::KEY_KPENTER => Some(KeyboardEvent::Enter),
-                Key::KEY_TAB => Some(KeyboardEvent::Tab),
-                Key::KEY_ESC => Some(KeyboardEvent::Escape),
-                _ => {
-                    if let Some(ch) = key_mapper.map_key(key, shift_pressed, caps_lock) {
-                        if ch == ' ' || ch.is_ascii_punctuation() {
-                            Some(KeyboardEvent::WordBoundary(ch))
-                        } else {
-                            Some(KeyboardEvent::Character(ch))
+        loop {
+            tokio::select! {
+                // Handle key events
+                Some((key, value)) = internal_rx.recv() => {
+                    // Check for layout change
+                    {
+                        let config = self.config.read().await;
+                        if config.settings.layout != current_layout {
+                            current_layout = config.settings.layout.clone();
+                            key_mapper = KeyMap::new(&current_layout);
+                            log::info!("Keyboard layout switched to: {}", current_layout);
                         }
-                    } else {
-                        None
+                    }
+
+                    // value: 0 = release, 1 = press, 2 = repeat
+                    let is_press = value == 1;
+                    let is_release = value == 0;
+
+                    // Track modifier states
+                    match key {
+                        Key::KEY_LEFTSHIFT | Key::KEY_RIGHTSHIFT => {
+                            shift_pressed = is_press;
+                            continue;
+                        }
+                        Key::KEY_CAPSLOCK if is_press => {
+                            caps_lock = !caps_lock;
+                            continue;
+                        }
+                        _ => {}
+                    }
+
+                    // Only process key presses (not releases or repeats for most keys)
+                    if !is_press {
+                        // Allow backspace repeat
+                        if key != Key::KEY_BACKSPACE || is_release {
+                            continue;
+                        }
+                    }
+
+                    // Removed debug log for privacy
+
+                    let event = match key {
+                        Key::KEY_BACKSPACE => Some(KeyboardEvent::Backspace),
+                        Key::KEY_ENTER | Key::KEY_KPENTER => Some(KeyboardEvent::Enter),
+                        Key::KEY_TAB => Some(KeyboardEvent::Tab),
+                        Key::KEY_ESC => Some(KeyboardEvent::Escape),
+                        _ => {
+                            if let Some(ch) = key_mapper.map_key(key, shift_pressed, caps_lock) {
+                                if ch == ' ' || ch.is_ascii_punctuation() {
+                                    Some(KeyboardEvent::WordBoundary(ch))
+                                } else {
+                                    Some(KeyboardEvent::Character(ch))
+                                }
+                            } else {
+                                None
+                            }
+                        }
+                    };
+
+                    if let Some(event) = event {
+                        if self.event_tx.send(event).await.is_err() {
+                            log::debug!("Event receiver dropped, stopping monitor");
+                            break;
+                        }
                     }
                 }
-            };
 
-            if let Some(event) = event {
-                if self.event_tx.send(event).await.is_err() {
-                    log::debug!("Event receiver dropped, stopping monitor");
-                    break;
+                // Handle hot-plug events
+                Some(path) = watcher_rx.recv() => {
+                    if monitored_paths.contains(&path) {
+                        continue;
+                    }
+
+                    // Try to wait a bit for the device to be ready
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+                    match Device::open(&path) {
+                        Ok(device) => {
+                            if Self::is_keyboard(&device) {
+                                log::info!("New keyboard detected: {} ({:?})", 
+                                    device.name().unwrap_or("Unknown"), path);
+                                
+                                monitored_paths.insert(path.clone());
+                                let tx = internal_tx.clone();
+                                std::thread::spawn(move || {
+                                    Self::device_reader(device, tx);
+                                });
+                            }
+                        }
+                        Err(e) => {
+                            log::debug!("Failed to open new device {:?}: {}", path, e);
+                        }
+                    }
                 }
+
+                else => break, // Start shutdown
             }
         }
+        
+        // Keep watcher alive until the end
+        drop(watcher);
 
         Ok(())
     }
@@ -224,11 +263,41 @@ impl KeyboardMonitor {
                     }
                 }
                 Err(e) => {
-                    log::error!("Error reading from device: {}", e);
+                    // Device disconnected or error
+                    log::debug!("Device reader stopped: {}", e);
                     return;
                 }
             }
         }
+    }
+
+    /// Setup directory watcher for /dev/input
+    fn setup_watcher(tx: mpsc::Sender<PathBuf>) -> Result<RecommendedWatcher> {
+        let mut watcher = RecommendedWatcher::new(
+            move |res: Result<Event, notify::Error>| {
+                if let Ok(event) = res {
+                    if event.kind.is_create() {
+                        for path in event.paths {
+                            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                                if name.starts_with("event") {
+                                    // Found a new event device
+                                    let _ = tx.blocking_send(path);
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            NotifyConfig::default(),
+        )?;
+
+        let input_dir = Path::new("/dev/input");
+        if input_dir.exists() {
+            watcher.watch(input_dir, RecursiveMode::NonRecursive)?;
+            log::info!("Watching /dev/input for new devices");
+        }
+
+        Ok(watcher)
     }
 }
 

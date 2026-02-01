@@ -24,7 +24,7 @@ static CAPTURE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// Process a match result and produce the final expansion
-pub fn expand_match(match_result: &MatchResult) -> Result<ExpansionResult> {
+pub fn expand_match(match_result: &MatchResult, variables: &serde_yaml::Value) -> Result<ExpansionResult> {
     let snippet = &match_result.snippet;
     let mut text = snippet.replace.clone();
 
@@ -34,7 +34,7 @@ pub fn expand_match(match_result: &MatchResult) -> Result<ExpansionResult> {
     }
 
     // Step 2: Expand variables ({{date}}, {{clipboard}}, etc.)
-    text = expand_variables(&text)?;
+    text = expand_variables(&text, variables)?;
 
     // Step 3: Apply case propagation if enabled
     if snippet.propagate_case {
@@ -75,14 +75,14 @@ fn replace_captures(text: &str, captures: &[String]) -> String {
 }
 
 /// Expand a snippet directly (without a match result)
-pub fn expand_snippet(snippet: &Snippet) -> Result<ExpansionResult> {
+pub fn expand_snippet(snippet: &Snippet, variables: &serde_yaml::Value) -> Result<ExpansionResult> {
     let match_result = MatchResult {
         snippet: snippet.clone(),
         typed_trigger: snippet.trigger.clone(),
         chars_to_delete: snippet.trigger.len(),
         captures: None,
     };
-    expand_match(&match_result)
+    expand_match(&match_result, variables)
 }
 
 #[cfg(test)]
@@ -100,7 +100,7 @@ mod tests {
             captures: None,
         };
 
-        let result = expand_match(&match_result).unwrap();
+        let result = expand_match(&match_result, &serde_yaml::Value::Null).unwrap();
         assert_eq!(result.text, "hello world");
         assert_eq!(result.delete_count, 5);
         assert!(result.cursor_offset.is_none());
@@ -127,7 +127,7 @@ mod tests {
             captures: None,
         };
 
-        let result = expand_match(&match_result).unwrap();
+        let result = expand_match(&match_result, &serde_yaml::Value::Null).unwrap();
         assert_eq!(result.text, "Hello  World");
         assert_eq!(result.cursor_offset, Some(6)); // 6 chars from end to cursor
     }
@@ -145,7 +145,7 @@ mod tests {
             captures: None,
         };
 
-        let result = expand_match(&match_result).unwrap();
+        let result = expand_match(&match_result, &serde_yaml::Value::Null).unwrap();
         assert_eq!(result.text, "TEST@EXAMPLE.COM");
     }
 
@@ -161,7 +161,7 @@ mod tests {
             captures: None,
         };
 
-        let result = expand_match(&match_result).unwrap();
+        let result = expand_match(&match_result, &serde_yaml::Value::Null).unwrap();
         assert_eq!(result.text, "Value: expanded");
     }
 
@@ -177,7 +177,7 @@ mod tests {
             captures: Some(vec!["456".to_string()]),
         };
 
-        let result = expand_match(&match_result).unwrap();
+        let result = expand_match(&match_result, &serde_yaml::Value::Null).unwrap();
         assert_eq!(result.text, "Number is 456");
     }
 }
