@@ -150,18 +150,18 @@ echo "Build complete!"
 echo
 
 # Install binary
-echo "Step 7: Installing xpander..."
-INSTALL_DIR="$HOME/.local/bin"
-mkdir -p "$INSTALL_DIR"
-cp target/release/xpander "$INSTALL_DIR/"
-chmod +x "$INSTALL_DIR/xpander"
+echo "Step 7: Installing xpander to system..."
+INSTALL_DIR="/usr/local/bin"
 
-# Add to PATH if needed
-if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
-    echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc"
-    echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.profile"
-    echo "Added $INSTALL_DIR to PATH"
-fi
+# Stop existing service/process if running
+echo "Stopping existing xpander processes..."
+systemctl --user stop xpander.service 2>/dev/null || true
+pkill -u "$USER" -x xpander 2>/dev/null || true
+
+# Copy new binary
+echo "Copying binary to $INSTALL_DIR..."
+sudo cp -f target/release/xpander "$INSTALL_DIR/"
+sudo chmod +x "$INSTALL_DIR/xpander"
 
 echo "Installed to $INSTALL_DIR/xpander"
 echo
